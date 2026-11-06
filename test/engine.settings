@@ -1,0 +1,5 @@
+[bootstrap]
+main_collection = /test/engine_test.collectionc
+
+[ravensight_test]
+root = .

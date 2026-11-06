@@ -1,0 +1,9 @@
+name: "engine_test"
+embedded_instances {
+  id: "engine_test"
+  data: "components {\n"
+  "  id: \"engine_test\"\n"
+  "  component: \"/test/engine_test.script\"\n"
+  "}\n"
+  ""
+}

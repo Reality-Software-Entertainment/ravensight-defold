@@ -1,0 +1,33 @@
+-- The Ravensight example: start, track, read a remote config value, and
+-- quit through the SDK. Put your own publishable key in ingestKey; with no
+-- key the SDK is inert and every call below is a no-op.
+local ravensight = require("ravensight.ravensight")
+
+function init(self)
+	ravensight.init({
+		ingestKey = sys.get_config_string("ravensight.ingest_key", ""),
+		optional = true,
+		debug = true,
+	})
+	ravensight.on("status_changed", function(reason)
+		print("Ravensight status: " .. tostring(reason or "ready"))
+	end)
+	ravensight.progression("start", "forest_1")
+	ravensight.track("level_start", { level = "forest_1", rs_kind = "level_start" })
+	self.speed = ravensight.getConfig("player_speed", 3)
+end
+
+function update(self, dt)
+	ravensight.update(dt)
+end
+
+function on_input(self, action_id, action)
+	-- Wire this to your own settings screen: the player's choice is saved.
+	if action_id == hash("toggle_analytics") and action.pressed then
+		ravensight.setTrackingEnabled(not ravensight.isTrackingEnabled())
+	end
+end
+
+function final(self)
+	ravensight.final()
+end

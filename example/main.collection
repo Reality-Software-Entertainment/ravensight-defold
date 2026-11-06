@@ -1,0 +1,9 @@
+name: "main"
+embedded_instances {
+  id: "ravensight_example"
+  data: "components {\n"
+  "  id: \"main\"\n"
+  "  component: \"/example/main.script\"\n"
+  "}\n"
+  ""
+}

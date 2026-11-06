@@ -1,0 +1,78 @@
+-- Runs inside the real engine (dmengine_headless): every pure spec under
+-- the engine's own Lua, then a live run of the adapter against the local
+-- mock server that test/engine.mjs starts. Prints ENGINE_TEST lines and
+-- exits with 0 when all passed.
+local ravensight = require("ravensight.ravensight")
+require("ravensight.core")
+require("ravensight.json")
+require("ravensight.typed")
+require("ravensight.hmac")
+require("ravensight.config")
+require("ravensight.errors")
+require("ravensight.scrub")
+require("ravensight.gzip")
+
+local function runSpecs()
+	local root = sys.get_config_string("ravensight_test.root", ".")
+	local files = { "json_spec", "scrub_spec", "config_spec", "typed_spec", "core_spec", "wave_spec", "contract_spec", "adapter_spec" }
+	local passed, failed = 0, 0
+	local cwd = root .. "/"
+	for _, name in ipairs(files) do
+		local chunk = assert(loadfile(cwd .. "spec/" .. name .. ".lua"))
+		local tests = chunk()
+		for _, t in ipairs(tests) do
+			local ok, err = xpcall(t[2], debug.traceback)
+			if ok then passed = passed + 1 else
+				failed = failed + 1
+				print("ENGINE_TEST FAIL " .. name .. ": " .. t[1] .. "\n" .. tostring(err))
+			end
+		end
+	end
+	print(string.format("ENGINE_TEST specs %d passed, %d failed", passed, failed))
+	return failed
+end
+
+function init(self)
+	print("ENGINE_TEST modules http=" .. type(rawget(_G, "http")) .. " sys=" .. type(rawget(_G, "sys")) .. " zlib=" .. type(rawget(_G, "zlib")) .. " crash=" .. type(rawget(_G, "crash")) .. " window=" .. type(rawget(_G, "window")) .. " socket=" .. type(rawget(_G, "socket")) .. " bit=" .. type(rawget(_G, "bit")))
+	self.failed = sys.get_config_string("ravensight_test.skip_specs", "") == "1" and 0 or runSpecs()
+	self.t = 0
+	local api = sys.get_config_string("ravensight_test.api_url", "")
+	if api == "" then
+		sys.exit(self.failed == 0 and 0 or 1)
+		return
+	end
+	self.live = true
+	ravensight._reset()
+	self.flushed = 0
+	ravensight.init({ ingestKey = "gt_pub_enginetest", apiUrl = api, appId = "ravensight-engine-test", flushInterval = 0.2, windowListener = false })
+	ravensight.on("events_flushed", function(n) self.flushed = self.flushed + n end)
+	for i = 1, 40 do
+		ravensight.track("engine_event", { n = i, pad = "padding padding padding padding" })
+	end
+	ravensight.trackError("warning", "manual error from the engine test")
+end
+
+function update(self, dt)
+	if not self.live then return end
+	ravensight.update(dt)
+	self.t = self.t + dt
+	local core = ravensight._core()
+	if not self.reportedRetry and core and core.retryAt then
+		self.reportedRetry = true
+		print(string.format("ENGINE_TEST retry_wait %.2f", core.retryAt - core.now()))
+	end
+	if self.flushed >= 42 and not self.quitting then
+		self.quitting = true
+		print("ENGINE_TEST flushed " .. self.flushed)
+		print("ENGINE_TEST reason " .. tostring(ravensight.getStatusReason()))
+		print("ENGINE_TEST session_token " .. (ravensight.getSessionToken() ~= "" and "set" or "empty"))
+		ravensight.quit(self.failed == 0 and 0 or 1)
+	elseif self.t > 20 and not self.quitting then
+		self.quitting = true
+		print("ENGINE_TEST timeout flushed=" .. self.flushed .. " core=" .. tostring(core ~= nil)
+			.. (core and (" tracking=" .. tostring(core.trackingEnabled) .. " reason=" .. tostring(core.statusReason)
+			.. " pending=" .. #core.pending .. " settingsPending=" .. tostring(core.settingsPending)
+			.. " session=" .. tostring(core.sessionToken)) or ""))
+		sys.exit(2)
+	end
+end

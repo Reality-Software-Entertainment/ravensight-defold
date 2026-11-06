@@ -1,0 +1,16 @@
+[project]
+title = Ravensight Defold SDK
+version = 0.1.0
+
+[bootstrap]
+main_collection = /example/main.collectionc
+
+[library]
+include_dirs = ravensight
+
+[display]
+width = 960
+height = 540
+
+[network]
+http_timeout = 15
