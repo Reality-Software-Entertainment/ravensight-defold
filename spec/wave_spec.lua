@@ -348,6 +348,9 @@ return {
     eq(h.names(h.requests[1].req), 'e1,e2')
     h.answer('/track/batch', 413)
     eq(h.names(h.requests[1].req), 'e1')
+    h.answer('/track/batch', 413)
+    eq(h.names(h.requests[1].req), 'e2', 'a 413 for one event drops it: never retried as it was')
+    eq(h.core:getDeliveryStats().dropped_refused, 1)
   end },
   -- ---------------------------------------------------- ads and attribution
   { 'trackAdRevenue sends exactly the seven keys, micros as a digit string', function()

@@ -27,7 +27,7 @@ reference says so and nothing here contradicted it.
 
 - Native crash and Lua error capture cannot chain to another handler.
 - `game_exited` on a player-closed window is delivered on the next launch.
-- No log trail (`rs_trail` is never sent).
+- No log trail (`rs_trail` is never sent or persisted).
 - Device id randomness on Windows is not from a system generator.
 - No GPU name on the session.
 - A headless (server) Defold build has no HTTP and sends nothing.

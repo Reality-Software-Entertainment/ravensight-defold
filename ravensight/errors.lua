@@ -64,6 +64,8 @@ function Errors.build(info, scrub)
     for k, v in pairs(info.props) do data[k] = v end
   end
   data.rs_kind = 'error'
+  -- The fingerprint is the server's; a client rs_fp is never sent.
+  data.rs_fp = nil
   data.rs_severity = Errors.SEVERITIES[info.severity] and info.severity or 'error'
   local message = tostring(info.message or '')
   if scrub then
@@ -127,7 +129,11 @@ function Errors:allow(info)
     self.refilledAt = t
   end
   if self.tokens < 1 then return false end
-  local key = tostring(info.errorType or '') .. '|' .. Errors.template(info.message) .. '|' .. Errors.firstFrame(info.stack)
+  -- The dedupe key works on the fields cut to 4 times their limits, so a
+  -- huge message costs no more than a bounded one.
+  local key = tostring(info.errorType or ''):sub(1, Errors.TYPE_CHARS * 4) .. '|'
+    .. Errors.template(cut(tostring(info.message or ''), Errors.MESSAGE_CHARS * 4)) .. '|'
+    .. Errors.firstFrame(cut(info.stack, Errors.STACK_CHARS * 4))
   local seen = self.perKey[key] or 0
   if seen >= Errors.PER_KEY_CAP then return false end
   self.perKey[key] = seen + 1

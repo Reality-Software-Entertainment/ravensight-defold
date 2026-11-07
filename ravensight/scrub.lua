@@ -13,7 +13,8 @@
 --  1. a URL loses its query, fragment and any user:password@
 --  2. Bearer tokens, JWT-shaped strings and gt_ keys become [token]
 --  3. an email address becomes [email]
---  4. C:\Users\<name>, /Users/<name> and /home/<name> become ~
+--  4. C:\Users\<name>, C:\Documents and Settings\<name>, /Users/<name>
+--     and /home/<name> become ~ (a name may hold spaces)
 --  5. IPv4, full IPv6 and compressed IPv6 with a digit become [ip]
 --  6. a run of 32 or more of [A-Za-z0-9+/=_-] with a digit becomes [token],
 --     unless it is a path of path words
@@ -158,43 +159,48 @@ local function emailMatch(s, i)
   return nil
 end
 
--- 4. \b[A-Za-z]:[\\/]Users[\\/][^\\/\s'"]+   (case-insensitive)
+-- 4. \b[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^/\\'"<>:\r\n]+   (case-insensitive)
+--    \/(?:Users|home)\/[^/\\'"<>:\r\n]+
+-- A home folder name may hold spaces; it stops at a separator, a quote,
+-- `<`, `>`, `:` or a line break.
 local function isSlash(b) return b == 47 or b == 92 end
 local function homeNameEnd(s, j)
   local start = j
   while true do
     local b = byte(s, j)
-    if b == nil or isSlash(b) or isSpace(b) or b == 39 or b == 34 then break end
+    if b == nil or isSlash(b) or b == 39 or b == 34 or b == 60 or b == 62 or b == 58 or b == 13 or b == 10 then break end
     j = j + 1
   end
   if j == start then return nil end
   return j
 end
-local USERS = { 117, 115, 101, 114, 115 }
+local function hasIgnoreCase(s, i, text)
+  for k = 1, #text do
+    if lower(byte(s, i + k - 1)) ~= lower(byte(text, k)) then return false end
+  end
+  return true
+end
 local function homeWindowsMatch(s, i)
   if not isAlpha(byte(s, i)) or not boundaryBefore(s, i) then return nil end
   if byte(s, i + 1) ~= 58 or not isSlash(byte(s, i + 2)) then return nil end
-  for k = 1, 5 do if lower(byte(s, i + 2 + k)) ~= USERS[k] then return nil end end
-  if not isSlash(byte(s, i + 8)) then return nil end
-  local e = homeNameEnd(s, i + 9)
-  if not e then return nil end
-  return e, '~'
+  for _, folder in ipairs({ 'users', 'documents and settings' }) do
+    local after = i + 3 + #folder
+    if hasIgnoreCase(s, i + 3, folder) and isSlash(byte(s, after)) then
+      local e = homeNameEnd(s, after + 1)
+      if e then return e, '~' end
+    end
+  end
+  return nil
 end
 
--- \/(?:Users|home)\/[^/\s'"]+
 local function homeUnixMatch(s, i)
   if byte(s, i) ~= 47 then return nil end
   local j
   if sub(s, i + 1, i + 6) == 'Users/' then j = i + 7
   elseif sub(s, i + 1, i + 5) == 'home/' then j = i + 6
   else return nil end
-  local e = j
-  while true do
-    local b = byte(s, e)
-    if b == nil or b == 47 or isSpace(b) or b == 39 or b == 34 then break end
-    e = e + 1
-  end
-  if e == j then return nil end
+  local e = homeNameEnd(s, j)
+  if not e then return nil end
   return e, '~'
 end
 

@@ -851,15 +851,21 @@ function Core:enqueue(name, data, timestampMs)
     self:emit('flush_failed', 'event_too_large')
     return nil
   end
-  -- Full: an automatic error goes first, so a storm of them can never push
-  -- gameplay out; an automatic error never evicts a gameplay event, it is
-  -- dropped itself.
+  -- Full (the shared error queue rules): an incoming automatic capture
+  -- evicts the oldest queued capture, or is dropped itself; it never evicts
+  -- a gameplay event. Gameplay evicts the oldest capture first, then the
+  -- oldest gameplay event. Nothing in the batch in flight is ever evicted,
+  -- because its answer removes the front of the queue by count.
   local automatic = Core.isAutomaticError(eventData)
   while #self.pending >= self:queueCap() do
-    local oldestError = self:firstQueuedError()
+    local victim = self:firstQueuedError()
+    if not victim and not automatic then
+      local floor = self.flushInProgress and self.inflightSize or 0
+      if floor < #self.pending then victim = floor + 1 end
+    end
     self.deliveryStats.dropped_overflow = self.deliveryStats.dropped_overflow + 1
-    if automatic and not oldestError then return nil end
-    table.remove(self.pending, oldestError or 1)
+    if not victim then return nil end
+    table.remove(self.pending, victim)
   end
   -- Gameplay events keep their place ahead of automatic errors. The session
   -- it was queued under goes with it, so a later session can send it with
@@ -1072,7 +1078,8 @@ end
 ---   a 400 naming an event by index drops that event, the rest are resent;
 ---   batch_too_large or a 413 halves the batch, and drops one event that is
 ---   still too large;
----   a 415 (or a 413 for one event) is resent uncompressed once, then dropped;
+---   a 413 for one event drops it; a 415 is resent uncompressed once, then
+---   dropped;
 ---   a 400 about one event with no index (event_too_large and the other
 ---   per-event ceilings) halves until that event is alone, then drops it;
 ---   any other 400 drops the request's events.
@@ -1086,7 +1093,15 @@ function Core:onBatchRefused(status, errorCode, parsed, size)
     self:countRefused(1, reason)
     return
   end
-  if status == 415 or (status == 413 and size <= 1) then
+  -- A 413 for one event is a 400 for that event: dropped, never retried
+  -- as it was. A 415 is resent uncompressed once.
+  if status == 413 and size <= 1 then
+    self.sendPlain = false
+    self:dropFront(size)
+    self:countRefused(size, reason)
+    return
+  end
+  if status == 415 then
     if not self.sendPlain then
       self.sendPlain = true
       return
@@ -1306,7 +1321,7 @@ function Core:loadSavedQueue()
     local ms = e.timestamp >= 1e12 and e.timestamp or e.timestamp * 1000
     if ms < cutoff then tooOld = tooOld + 1 return end
     -- Each event keeps its rs_event_id: it lives inside data.
-    loaded[#loaded + 1] = { event = e.event, data = type(e.data) == 'table' and e.data or {}, timestamp = e.timestamp, _origin = origin or false }
+    loaded[#loaded + 1] = { event = e.event, data = type(e.data) == 'table' and Core.persistable(e.data) or {}, timestamp = e.timestamp, _origin = origin or false }
   end
   local legacy = self.storage.read(Core.LEGACY_QUEUE_FILE)
   if legacy then
@@ -1334,6 +1349,16 @@ function Core:loadSavedQueue()
   if legacy then self.storage.remove(Core.LEGACY_QUEUE_FILE) end
 end
 
+--- An event's data as it may be written to disk: rs_trail is never
+--- persisted (the shared error queue rules); everything else is kept,
+--- including the capture's rs_source flag.
+function Core.persistable(data)
+  if type(data) ~= 'table' or data.rs_trail == nil then return data end
+  local out = shallowCopy(data)
+  out.rs_trail = nil
+  return out
+end
+
 --- Writes the queue now, as format version 2: one group per session with
 --- that session's origin exactly as received. The storage's replace (a
 --- temporary file renamed over the old one) is used where it exists, so a
@@ -1357,7 +1382,7 @@ function Core:saveQueue(stopping)
       last = session
     end
     local events = groups[#groups].events
-    events[#events + 1] = { event = e.event, timestamp = e.timestamp, data = e.data }
+    events[#events + 1] = { event = e.event, timestamp = e.timestamp, data = Core.persistable(e.data) }
   end
   local text = json.encode({ version = Core.QUEUE_FORMAT_VERSION, groups = groups })
   local replace = self.storage.replace or self.storage.write

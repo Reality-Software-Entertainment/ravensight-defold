@@ -182,7 +182,24 @@ ravensight.progression("complete", "forest_1", { score = 1200 })
 - Defold keeps one error handler. If your game sets its own, pass
   `captureErrors = false` and call
   `ravensight.captureLuaError(source, message, traceback)` from yours.
-- Defold has no hook on its log, so this SDK sends no log trail.
+- Defold has no hook on its log, so this SDK sends no log trail, and an
+  `rs_trail` key is never written to disk: it is stripped before the queue
+  is saved and from anything read back.
+- **The queue under a storm.** Gameplay events (a manual `trackError`
+  included) go before automatic captures in every batch. When the queue is
+  full, an incoming capture evicts the oldest capture or is dropped itself;
+  it never evicts a gameplay event, and nothing in the batch in flight is
+  ever evicted.
+- The hooks are installed only with a key and after consent (with
+  `consent = "opt_in"`, at the yes). Defold keeps one error handler and
+  cannot restore its own, so after an opt-out or when your game's capture
+  switch is off the installed handler stays and does nothing.
+- Opting out or resetting the device id deletes the saved queue (captures
+  included), any pending error records and any temporary `.tmp` copies.
+- **Backups.** The queue and pending error records live in the save folder
+  from `sys.get_save_file`. Defold gives Lua no way to mark a file as
+  excluded from iOS or Android backups, so they can be included in a device
+  backup; a game that must exclude them sets the attribute natively.
 
 ## Delivery
 

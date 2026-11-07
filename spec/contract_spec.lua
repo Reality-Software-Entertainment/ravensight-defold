@@ -363,4 +363,74 @@ return {
     eq(Errors.template('slot 3 at 0xdeadbeef "name"'), 'slot # at # "?"')
     eq(Errors.firstFrame('stack traceback:\n  main.script:3: in f\n'), 'main.script:3: in f')
   end },
+
+  -- ------------------------------------------- the shared error queue rules
+  { 'queue rule 1: within a flush, gameplay goes before captures; a manual trackError is gameplay', function()
+    local h = harness()
+    h.boot({ errorCapture = { enabled = true } })
+    h.answer('/api/v1/track/batch', 202, {})
+    h.core:captureError({ source = 'uncaught', message = 'auto' })
+    h.core:trackError('error', 'manual')
+    h.core:track('gameplay', {})
+    h.core:flush()
+    local kinds = {}
+    for _, e in ipairs(h.events(h.requests[1].req)) do kinds[#kinds + 1] = e.event .. ':' .. tostring(e.data.rs_source) end
+    eq(table.concat(kinds, ','), 'error:nil,gameplay:nil,error:uncaught')
+  end },
+  { 'queue rule 2: a capture evicts the oldest capture, or is dropped; it never evicts gameplay', function()
+    local h = harness()
+    h.boot({ errorCapture = { enabled = true } })
+    h.answer('/api/v1/track/batch', 202, {})
+    h.core.maxQueueSize = 3
+    h.core:track('g1', {})
+    h.core:captureError({ source = 'uncaught', message = 'first', errorType = 'A' })
+    h.core:track('g2', {})
+    h.core:captureError({ source = 'uncaught', message = 'second', errorType = 'B' })
+    eq(h.pendingNames(), 'g1,g2,error')
+    eq(h.core.pending[3].data.rs_message, 'second', 'the oldest capture was evicted')
+    h.core:track('g3', {})
+    eq(h.pendingNames(), 'g1,g2,g3', 'gameplay evicts the capture')
+    eq(h.core:captureError({ source = 'uncaught', message = 'third', errorType = 'C' }), true)
+    eq(h.pendingNames(), 'g1,g2,g3', 'no capture to evict: the incoming capture is dropped')
+  end },
+  { 'queue rule 2: nothing in flight is evicted, so the answer removes the right events', function()
+    local h = harness()
+    h.boot({ errorCapture = { enabled = true } })
+    h.answer('/api/v1/track/batch', 202, {})
+    h.core.maxQueueSize = 3
+    h.core:track('a', {}); h.core:track('b', {})
+    h.core:flush()
+    eq(h.core.inflightSize, 2)
+    h.core:track('c', {})
+    h.core:track('d', {})
+    eq(h.pendingNames(), 'a,b,d', 'c, the oldest not in flight, made room')
+    h.core:captureError({ source = 'uncaught', message = 'x' })
+    eq(h.pendingNames(), 'a,b,d', 'a capture never evicts the batch in flight')
+    h.answer('/api/v1/track/batch', 202, {})
+    eq(h.pendingNames(), 'd')
+  end },
+  { 'queue rule 3: rs_trail is never written to the queue file, nor restored from it', function()
+    local h = harness()
+    h.boot()
+    h.answer('/api/v1/track/batch', 500, {})
+    h.core:track('error', { rs_kind = 'error', rs_source = 'uncaught', rs_message = 'm', rs_trail = '+1 info line' })
+    h.core:update()
+    local text = h.files[Core.queueFile(KEY)]
+    assert(text and not text:find('rs_trail', 1, true), 'no trail on disk')
+    assert(text:find('"rs_source":"uncaught"', 1, true), 'the capture flag is kept')
+    eq(h.core.pending[#h.core.pending].data.rs_trail, '+1 info line', 'kept in memory')
+    local again = harness({ files = { [Core.queueFile(KEY)] = json.encode({ version = 2, groups = { { events = {
+      { event = 'error', timestamp = 1799999999000, data = { rs_kind = 'error', rs_source = 'uncaught', rs_trail = 'old' } } } } } }) } })
+    again.core:start()
+    eq(again.core.pending[1].data.rs_trail, nil)
+  end },
+  { 'error events never carry a client rs_fp; the dedupe key works on cut fields', function()
+    local h = harness()
+    h.boot({ errorCapture = { enabled = true } })
+    h.core:trackError('error', 'm', { props = { rs_fp = 'v1:0000000000000000' } })
+    eq(h.core.pending[#h.core.pending].data.rs_fp, nil)
+    local huge = string.rep('a', 100000)
+    assert(h.core:captureError({ source = 'uncaught', message = huge, stack = huge }))
+    eq(#h.core.pending[#h.core.pending].data.rs_message, 200)
+  end },
 }

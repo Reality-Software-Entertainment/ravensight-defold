@@ -280,4 +280,32 @@ return {
     eq(e.rs.apiBase(), 'https://api.ravensight.io/api/v1')
     cleanup()
   end },
+  { 'queue rule 3: opt-out and a reset delete persisted captures, pending records and any .tmp file', function()
+    for _, action in ipairs({ 'optout', 'reset' }) do
+      local e = fakeEngine()
+      e.rs.init({ ingestKey = 'gt_live_k' })
+      e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+      e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600, errorCapture = { enabled = true } })
+      e.rs.captureLuaError('lua', 'main.script:1: boom', '')
+      e.rs.update()
+      local queue = 'ravensight_queue-' .. Core.fnv1a64('gt_live_k') .. '.json'
+      assert(e.file(queue):find('"rs_source":"uncaught"', 1, true), 'the capture was persisted')
+      for _, name in ipairs({ queue .. '.tmp', 'ravensight_pending-errors.json', 'ravensight_pending-errors.json.tmp' }) do
+        local f = assert(io.open(e.dir .. '/My Game-' .. name, 'wb')); f:write('x'); f:close()
+      end
+      if action == 'optout' then e.rs.setTrackingEnabled(false) else e.rs.resetDeviceId() end
+      for _, name in ipairs({ queue, queue .. '.tmp', 'ravensight_pending-errors.json', 'ravensight_pending-errors.json.tmp' }) do
+        eq(e.file(name), nil, action .. ' deletes ' .. name)
+      end
+      cleanup()
+    end
+  end },
+  { 'consent: no hook before the yes with opt_in; installed at the yes', function()
+    local e = fakeEngine()
+    e.rs.init({ ingestKey = 'gt_live_k', consent = 'opt_in' })
+    eq(e.errorHandler, nil, 'nothing installed before consent')
+    e.rs.setTrackingEnabled(true)
+    assert(e.errorHandler, 'installed at the yes')
+    cleanup()
+  end },
 }

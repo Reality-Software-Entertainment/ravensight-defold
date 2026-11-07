@@ -230,7 +230,16 @@ function M.captureLuaError(source, message, traceback)
   core:captureError({ source = 'uncaught', severity = 'error', message = text, stack = traceback, errorType = 'LuaError' })
 end
 
+--- Installs the hooks once the player may be tracked: never without a
+--- key, never before consent (an opt_in game installs them at the yes),
+--- never once the game's capture switch is known to be off. Defold keeps
+--- one error handler and cannot hand back the engine's own, so a handler
+--- installed earlier stays and does nothing while capture is off.
+local installedCapture = false
 local function installErrorCapture()
+  if installedCapture or not core or not core.captureErrors or not core.trackingEnabled then return end
+  if core.errorCapture and not core.errorCapture.enabled then return end
+  installedCapture = true
   local sys = engine('sys')
   if sys and sys.set_error_handler then
     pcall(sys.set_error_handler, function(source, message, traceback) M.captureLuaError(source, message, traceback) end)
@@ -238,7 +247,7 @@ local function installErrorCapture()
   -- A native crash in the last run, from the engine's crash dump. Loading it
   -- deletes it, so it is read only while collecting.
   local crash = engine('crash')
-  if crash and crash.load_previous and core.trackingEnabled then
+  if crash and crash.load_previous then
     local ok, handle = pcall(crash.load_previous)
     if ok and handle then
       local signum = crash.get_signum and crash.get_signum(handle) or 0
@@ -360,7 +369,9 @@ function M.init(options)
     core.timeMs = function() return math.floor(socket.gettime() * 1000) end
   end
   core:start()
-  if core.captureErrors then installErrorCapture() end
+  installErrorCapture()
+  -- An opt_in game, or a yes after an opt-out, installs the hooks then.
+  core:on('status_changed', function() installErrorCapture() end)
   local window = engine('window')
   if config.windowListener and window and window.set_listener then
     pcall(window.set_listener, function(_, event, data) M.window_event(event, data) end)
@@ -522,6 +533,7 @@ end
 --- For the tests only: forget everything so init() can run again.
 function M._reset()
   core, config, initialized, quitCode, exited = nil, nil, false, nil, false
+  installedCapture = false
 end
 function M._core() return core end
 

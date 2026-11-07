@@ -6,6 +6,12 @@ First release.
 
 ### Added
 
+- The shared error queue rules: gameplay before captures in every batch;
+  a capture evicts only the oldest capture, never gameplay or the batch in
+  flight; `rs_trail` is never persisted; opt-out and reset delete persisted
+  captures and temporary files. Scrub vectors at version 6 (home folder
+  names with spaces, `Documents and Settings`).
+
 - Sessions, batched events and the saved queue (version 2 format, one file
   per ingest key, atomic writes, origin per session, 500 events, 89 days).
 - `game_started` at the real start and `game_exited` on quit, each once;
