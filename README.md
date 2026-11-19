@@ -5,22 +5,27 @@ errors, ads and attribution, remote config and experiments, sent to
 [Ravensight](https://ravensight.io). Pure Lua, no native extension, so it
 needs no build server and works wherever the engine's `http` module does.
 
-Version 0.1.0. Beta: the specs and a live run pass inside the Defold 1.14
-engine on Linux (see "Running the tests"), but no shipped game has proven it
-on a device yet.
+Preview: not yet verified inside Defold on a device; tested with the specs
+under LuaJIT, and in CI with the same specs and a live run against a local
+mock API inside the Defold 1.14 engine on Linux.
+
+Version 0.1.0. See [docs/FEASIBILITY.md](docs/FEASIBILITY.md) for what each
+engine API gives and where the SDK degrades.
 
 ## Install
 
-Add the library to your `game.project` dependencies, then Project > Fetch
-Libraries:
+The source is the public repository
+[ravensight-defold](https://github.com/Reality-Software-Entertainment/ravensight-defold).
+Nothing is published to an asset store. Add the archive of its `v0.2.0` tag
+to your `game.project` dependencies, then Project > Fetch Libraries:
 
 ```
 [project]
-dependencies#0 = https://github.com/Reality-Software-Entertainment/ravensight-defold/archive/refs/tags/v0.1.0.zip
+dependencies#0 = https://github.com/Reality-Software-Entertainment/ravensight-defold/archive/refs/tags/v0.2.0.zip
 ```
 
 The library shares one folder, `ravensight/` (`[library] include_dirs`).
-You can also copy that folder into your project.
+You can also copy that folder from a clone into your project.
 
 ## Use
 
@@ -346,6 +351,11 @@ node test/engine.mjs path/to/bob.jar path/to/dmengine java
 (bob needs Java 25). On Linux, pass `test/engine-xvfb.sh` as the engine with
 `DMENGINE` set to the full engine: the headless engine has no `http` module.
 CI runs both (`.github/workflows/test.yml`).
+
+Install the local checks once per clone: `git config core.hooksPath .githooks`. The pre-push hook then runs this repository's tests before every push, with a time limit, and refuses the push if they fail. CI runs nightly and on demand, not on pushes or pull requests, so this hook is where a change is checked first.
+
+The hook runs `luajit spec/run.lua`. The engine test downloads the engine,
+so it runs in CI only.
 
 ## License
 
