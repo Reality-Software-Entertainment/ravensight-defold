@@ -44,7 +44,11 @@ function init(self)
 	self.live = true
 	ravensight._reset()
 	self.flushed = 0
+	-- In upper case: it goes lowercased with every session attempt until one opens.
+	ravensight.setCampaignLink("64B0000000000000000000A1")
 	ravensight.init({ ingestKey = "gt_pub_enginetest", apiUrl = api, appId = "ravensight-engine-test", flushInterval = 0.2, windowListener = false })
+	-- Held until the session answer brings the salt, then sent once.
+	ravensight.identify("engine-test-3f2a9c1e")
 	ravensight.on("events_flushed", function(n) self.flushed = self.flushed + n end)
 	for i = 1, 40 do
 		ravensight.track("engine_event", { n = i, pad = "padding padding padding padding" })

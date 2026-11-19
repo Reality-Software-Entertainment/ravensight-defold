@@ -21,7 +21,12 @@ if (!bob || !engine) {
 }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = 'engine-test-secret-0123456789abcdefghijklmnopq';
-const seen = { settings: [], sessions: [], batches: [], badSignatures: 0 };
+// The identify vectors' test salt, the account and the campaign link that
+// test/engine_test.script passes.
+const IDENTIFY_SALT = 'a3f1c9e07b2d48c6915e2f7a0d4b8c3e6f1a9d2c7e5b0f4a8d3c6e9b1f2a7d40';
+const ACCOUNT = 'engine-test-3f2a9c1e';
+const LINK = '64b0000000000000000000a1';
+const seen = { settings: [], sessions: [], batches: [], identify: [], badSignatures: 0 };
 let sessionCalls = 0;
 
 const server = createServer((req, res) => {
@@ -50,7 +55,12 @@ const server = createServer((req, res) => {
         origin: { session: 'ses_engine', build: '0.1.0', platform: 'macOS', stamp: 'o1.x.y' },
         signing: { algorithm: 'HMAC-SHA256', version: 1, secret: SECRET, serverTime: Math.floor(Date.now() / 1000) },
         errorCapture: { enabled: true, trail: false },
+        identify: { salt: IDENTIFY_SALT },
       });
+    }
+    if (req.method === 'POST' && req.url === '/api/v1/identify') {
+      seen.identify.push({ headers: req.headers, text });
+      return reply(200, { playerId: 'px_engine', linked: true, verified: false, repeat: false });
     }
     if (req.method === 'POST' && req.url === '/api/v1/track/batch') {
       const t = req.headers['x-ravensight-timestamp'];
@@ -92,6 +102,12 @@ check(specs && Number(specs[2]) === 0 && Number(specs[1]) > 0, `the pure specs p
 check(code === 0, `the engine exited 0 through ravensight.quit (got ${code})`);
 check(seen.settings.length >= 1 && seen.settings[0]['x-api-key'] === 'gt_pub_enginetest', 'settings carried X-API-Key');
 check(seen.sessions[0] && seen.sessions[0].sdk === 'defold/0.1.0', 'the session names defold/0.1.0');
+check(seen.sessions.length > 0 && seen.sessions.every(s => s.campaignLink === LINK), 'every session attempt until one opened carried the campaign link, lowercased');
+const accountHash = createHmac('sha256', IDENTIFY_SALT).update(ACCOUNT).digest('hex');
+check(seen.identify.length === 1
+  && seen.identify[0].text === JSON.stringify({ accountHash })
+  && seen.identify[0].headers['x-api-key'] === 'gt_pub_enginetest'
+  && seen.identify[0].headers['x-session-token'] === 'engine-session', 'identify went once, with the session token and only the salted hash');
 const retry = /ENGINE_TEST retry_wait ([\d.]+)/.exec(output);
 check(retry && Math.abs(Number(retry[1]) - 1) < 0.05, 'a 429 Retry-After header reached the SDK through the engine HTTP client');
 const events = seen.batches.flatMap(b => b.events);

@@ -28,6 +28,8 @@ local config
 local initialized = false
 local quitCode = nil
 local exited = false
+local heldCampaignLink -- a campaign link id set before init (memory only)
+local inertAccountId   -- a valid account id held by an inert or disabled start
 
 -- The engine, reached through globals so the tests can stand in for it.
 local function engine(name) return rawget(_G, name) end
@@ -192,6 +194,22 @@ local function send(req, callback)
     log('warn', 'request failed to start: ' .. tostring(err))
     callback(0, '', {})
   end
+end
+
+-- ---------------------------------------------------------- campaign links
+
+--- Reads rs_link from the page address in an HTML5 build. The page's own
+--- URLSearchParams decodes the query and only the value comes back, as
+--- text; Lua checks it is a link id. Nothing from the page is run as Lua.
+local PAGE_LINK_JS = '(function(){try{var v=new URLSearchParams(window.location.search).get("rs_link");'
+  .. 'return v===null?"":String(v)}catch(e){return ""}})()'
+
+local function pageCampaignLink()
+  local html5 = engine('html5')
+  if not (html5 and html5.run) then return nil end
+  local ok, value = pcall(html5.run, PAGE_LINK_JS)
+  if not ok or type(value) ~= 'string' then return nil end
+  return Core.campaignLinkId(value)
 end
 
 -- ---------------------------------------------------------------- playtest
@@ -368,6 +386,17 @@ function M.init(options)
     -- socket.gettime is wall time with a fraction: a better event clock.
     core.timeMs = function() return math.floor(socket.gettime() * 1000) end
   end
+  -- A campaign link goes with the first session: in an HTML5 build the one
+  -- on the page address, read once here; a link the game set before init
+  -- replaces it.
+  if platform == 'Web' then
+    local pageLink = pageCampaignLink()
+    if pageLink then core:setCampaignLink(pageLink) end
+  end
+  if heldCampaignLink then
+    core:setCampaignLink(heldCampaignLink)
+    heldCampaignLink = nil
+  end
   core:start()
   installErrorCapture()
   -- An opt_in game, or a yes after an opt-out, installs the hooks then.
@@ -506,6 +535,79 @@ function M.resetDeviceId()
   return core.deviceId
 end
 
+-- ------------------------------------------- identify players who sign in
+
+--- Links this device to your game's own account once the player signs in,
+--- so one person on two devices, or before and after sign-in, counts as one
+--- player. Pass a random, high-entropy id (a random UUID or analytics id
+--- stored with the account), a string or a whole number used as its decimal
+--- digits; never a sequential database key, an email or a name: the salt
+--- reaches every client, so a guessable id can be matched. The hash is a
+--- pseudonymous identifier to declare in the game's privacy notice.
+---
+--- Only a salted hash of the id (accountHash, HMAC-SHA256 keyed with the
+--- game's salt from the session answer) is sent, with the session token,
+--- once per session, and saved as ravensight_identity beside the device id.
+--- The id itself is held in memory only until that salt is known. A
+--- different account first does resetIdentity(). It never enters the event
+--- queue or delays an event. Without a key, with enabled = false, before an
+--- opt_in yes, or in a playtest run it is held in memory only.
+---
+--- Returns true, or false and the reason: "not_text", "empty", "too_long"
+--- (over 256 bytes of UTF-8), "looks_like_email" (any "@") or
+--- "not_started" (before init). A refusal changes nothing and prints one
+--- warning.
+function M.identify(accountId)
+  local id, reason = Core.identifyRefusal(accountId)
+  if not id then
+    log('warn', 'identify() refused (' .. reason .. '): pass a non-empty random id of at most 256 bytes with no @')
+    return false, reason
+  end
+  if not initialized then return false, 'not_started' end
+  if not core then
+    -- Inert (no key) or enabled = false: held in memory, never sent.
+    inertAccountId = id
+    return true
+  end
+  return core:identify(id)
+end
+
+--- For sign-out: forgets the account and switches to a fresh device id as
+--- resetDeviceId() does, so the next player is not linked to the last one.
+--- Sends nothing; does nothing when no account is set.
+function M.resetIdentity()
+  inertAccountId = nil
+  if core then core:resetIdentity() end
+end
+
+--- True while an account is set by identify(). The id is never readable.
+function M.isIdentified()
+  if core then return core:isIdentified() end
+  return inertAccountId ~= nil
+end
+
+--- Sends a Ravensight campaign link with the next session the SDK opens, so
+--- the player is counted on the Campaign links page. In an HTML5 build the
+--- SDK reads rs_link from the page address itself, once, at init. On other
+--- platforms call this from the handler your game already has for the
+--- address it was opened with (a deep link, a custom URL scheme), with the
+--- rs_link value of that address. Best called before init; a later call
+--- goes with the next session.
+---
+--- Returns true when `linkId` is a link id (24 hex characters, in any case),
+--- which then replaces any link waiting; otherwise false and "invalid_link",
+--- and nothing changes. Memory only; sent once, never in a playtest run, and
+--- only when a session may open (a key, enabled, and the player's consent).
+function M.setCampaignLink(linkId)
+  local id = Core.campaignLinkId(linkId)
+  if not id then return false, 'invalid_link' end
+  if core then return core:setCampaignLink(id) end
+  -- Before init it is handed to the core at init. With no key or
+  -- enabled = false it stays here, in memory, and is never sent.
+  heldCampaignLink = id
+  return true
+end
+
 function M.getDeviceId() return core and core.deviceId or nil end
 --- The open session's token, for a game server's joinToken; '' until one opens.
 function M.getSessionToken() return core and core.sessionToken or '' end
@@ -534,6 +636,7 @@ end
 function M._reset()
   core, config, initialized, quitCode, exited = nil, nil, false, nil, false
   installedCapture = false
+  heldCampaignLink, inertAccountId = nil, nil
 end
 function M._core() return core end
 
