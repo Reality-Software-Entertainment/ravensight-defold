@@ -1,6 +1,6 @@
 [project]
 title = Ravensight Defold SDK
-version = 0.1.0
+version = 0.2.0
 
 [bootstrap]
 main_collection = /example/main.collectionc

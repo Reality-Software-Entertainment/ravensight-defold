@@ -20,6 +20,9 @@ reference says so and nothing here contradicted it.
 | JSON that escapes correctly | `json.decode` exists; the SDK carries its own encoder for byte-exact, signed bodies. | Possible, covered by the JSON specs. |
 | Error capture | `sys.set_error_handler(fn(source, message, traceback))`; the `crash` module reads the last native crash dump once (`crash.load_previous`, deleted after loading). | Possible. There is one error handler and no way to read the old one, so chaining is not possible: a game with its own handler turns capture off and forwards. No log hook, so no trail. |
 | Device fields | `sys.get_sys_info()`: `device_model` (iOS, Android), `system_version`. No GPU name. | Model and OS version sent; GPU omitted. |
+| Identify storage | The same save folder (`sys.save` on HTML5) as the device id. | Possible: `ravensight_identity` holds only the salt and the salted hash, beside the device id. The HMAC is the pure Lua one above, checked against the identify vectors under LuaJIT and inside the engine. |
+| Campaign link on HTML5 | `html5.run(code)` evaluates JavaScript on the page and returns the result as a string. | Possible: at `init`, one call reads `rs_link` with the page's own `URLSearchParams` over `window.location.search` and returns only that value; Lua checks it is a 24 hex link id. Nothing from the page is run as Lua. Not run in a browser here. |
+| Campaign link elsewhere | No engine API gives the address a desktop or mobile game was opened with. | Degraded: the game passes `rs_link` from its own deep link or URL scheme handling with `setCampaignLink(linkId)`. |
 | Playtest command line | No raw command line in Lua. | Degraded: environment variables, or `--config=ravensight.playtest_token=...` read through `sys.get_config_string`. |
 | Packaging | A library project: `[library] include_dirs = ravensight` in `game.project`; a game lists the repository's zip archive URL in `project.dependencies`. | Possible. Every `require` is a literal string, because bob only bundles modules it can see. |
 
@@ -31,3 +34,5 @@ reference says so and nothing here contradicted it.
 - Device id randomness on Windows is not from a system generator.
 - No GPU name on the session.
 - A headless (server) Defold build has no HTTP and sends nothing.
+- A campaign link reaches the SDK by itself only in an HTML5 build, from the
+  page address; elsewhere the game passes it with `setCampaignLink`.

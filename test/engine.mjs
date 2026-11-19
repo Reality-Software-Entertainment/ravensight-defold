@@ -101,7 +101,7 @@ const specs = /ENGINE_TEST specs (\d+) passed, (\d+) failed/.exec(output);
 check(specs && Number(specs[2]) === 0 && Number(specs[1]) > 0, `the pure specs pass inside the engine (${specs ? specs[1] : 0})`);
 check(code === 0, `the engine exited 0 through ravensight.quit (got ${code})`);
 check(seen.settings.length >= 1 && seen.settings[0]['x-api-key'] === 'gt_pub_enginetest', 'settings carried X-API-Key');
-check(seen.sessions[0] && seen.sessions[0].sdk === 'defold/0.1.0', 'the session names defold/0.1.0');
+check(seen.sessions[0] && seen.sessions[0].sdk === 'defold/0.2.0', 'the session names defold/0.2.0');
 check(seen.sessions.length > 0 && seen.sessions.every(s => s.campaignLink === LINK), 'every session attempt until one opened carried the campaign link, lowercased');
 const accountHash = createHmac('sha256', IDENTIFY_SALT).update(ACCOUNT).digest('hex');
 check(seen.identify.length === 1
