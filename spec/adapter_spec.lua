@@ -3,6 +3,7 @@
 local Gzip = require('ravensight.gzip')
 local Core = require('ravensight.core')
 local json = require('ravensight.json')
+local Hmac = require('ravensight.hmac')
 
 local function eq(a, b, msg) assert(a == b, (msg or '') .. ' expected ' .. tostring(b) .. ', got ' .. tostring(a)) end
 
@@ -32,11 +33,11 @@ end
 
 -- The engine's own modules, put back after each test (the specs also run
 -- inside the real engine).
-local saved = { http = rawget(_G, 'http'), sys = rawget(_G, 'sys'), window = rawget(_G, 'window'), zlib = rawget(_G, 'zlib'), crash = rawget(_G, 'crash') }
+local saved = { http = rawget(_G, 'http'), sys = rawget(_G, 'sys'), window = rawget(_G, 'window'), zlib = rawget(_G, 'zlib'), crash = rawget(_G, 'crash'), html5 = rawget(_G, 'html5') }
 
 local function fakeEngine(opts)
   opts = opts or {}
-  local e = { requests = {}, exits = {}, listener = nil, errorHandler = nil, dir = tmpRoot .. '/' .. tostring(math.random(1e9)) }
+  local e = { requests = {}, exits = {}, listener = nil, errorHandler = nil, dir = tmpRoot .. '/' .. tostring(math.random(1e9)), web = {} }
   os.execute('mkdir -p "' .. e.dir .. '"')
   _G.http = {
     request = function(url, method, cb, headers, body, options)
@@ -54,6 +55,9 @@ local function fakeEngine(opts)
     get_save_file = function(app, file) return e.dir .. '/' .. app .. '-' .. file end,
     exit = function(code) table.insert(e.exits, code) end,
     set_error_handler = function(fn) e.errorHandler = fn end,
+    -- What the engine persists in the browser on HTML5.
+    save = function(path, t) e.web[path] = t return true end,
+    load = function(path) return e.web[path] or {} end,
   }
   _G.window = {
     WINDOW_EVENT_FOCUS_LOST = 1, WINDOW_EVENT_FOCUS_GAINED = 2, WINDOW_EVENT_ICONIFIED = 3, WINDOW_EVENT_DEICONIFIED = 4,
@@ -61,6 +65,7 @@ local function fakeEngine(opts)
   }
   _G.zlib = { deflate = storedZlib }
   _G.crash = opts.crash
+  _G.html5 = opts.html5
   package.loaded['ravensight.ravensight'] = nil
   e.rs = require('ravensight.ravensight')
   e.rs._reset()
@@ -79,8 +84,29 @@ local function fakeEngine(opts)
   return e
 end
 
+--- Every request sent so far to `path`, answered or not, oldest first.
+local function requestsTo(e, path)
+  local out = {}
+  for _, r in ipairs(e.requests) do if r.url:find(path, 1, true) then out[#out + 1] = r end end
+  return out
+end
+
+--- What `fn` printed, one entry a line.
+local function capturePrint(fn)
+  local lines, original = {}, print
+  _G.print = function(line) lines[#lines + 1] = tostring(line) end
+  local ok, err = pcall(fn)
+  _G.print = original
+  assert(ok, err)
+  return lines
+end
+
+local LINK = '64b0000000000000000000a1'
+local LINK2 = '64b0000000000000000000b2'
+
 local function cleanup()
-  for k, v in pairs(saved) do _G[k] = v end
+  -- By name: a module the engine lacks is nil in `saved` and must end nil.
+  for _, k in ipairs({ 'http', 'sys', 'window', 'zlib', 'crash', 'html5' }) do _G[k] = saved[k] end
   package.loaded['ravensight.ravensight'] = nil
 end
 
@@ -306,6 +332,214 @@ return {
     eq(e.errorHandler, nil, 'nothing installed before consent')
     e.rs.setTrackingEnabled(true)
     assert(e.errorHandler, 'installed at the yes')
+    cleanup()
+  end },
+
+  -- ------------------------------------------------------- 0.2.0: identify
+
+  { 'identify: hashed with the session salt, sent once on the session, saved beside the device id', function()
+    local e = fakeEngine()
+    local salt = string.rep('ab', 32)
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600, identify = { salt = salt } })
+    eq(e.rs.identify('u1'), true)
+    eq(e.rs.isIdentified(), true)
+    eq(e.rs.identify('u1'), true, 'the same account again')
+    local sent = requestsTo(e, '/api/v1/identify')
+    eq(#sent, 1, 'one identify for the session')
+    eq(sent[1].method, 'POST')
+    eq(sent[1].headers['X-API-Key'], 'gt_live_k')
+    eq(sent[1].headers['X-Session-Token'], 'tok')
+    eq(sent[1].body, '{"accountHash":"' .. Hmac.hex(salt, 'u1') .. '"}')
+    local saved = json.decode(e.file('ravensight_identity'))
+    eq(saved.salt, salt)
+    eq(saved.accountHash, Hmac.hex(salt, 'u1'))
+    assert(not e.file('ravensight_identity'):find('u1', 1, true), 'never the raw id')
+    cleanup()
+  end },
+
+  { 'identify: a refusal returns the reason with one warning that never prints the value', function()
+    local e = fakeEngine()
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    local lines = capturePrint(function()
+      local ok, reason = e.rs.identify('a@secret.example')
+      eq(ok, false); eq(reason, 'looks_like_email')
+    end)
+    eq(#lines, 1, 'one warning')
+    assert(lines[1]:find('identify', 1, true), lines[1])
+    assert(not lines[1]:find('secret', 1, true), 'the value is never printed')
+    local ok, reason = e.rs.identify(12.5)
+    eq(ok, false); eq(reason, 'not_text')
+    ok, reason = e.rs.identify('')
+    eq(ok, false); eq(reason, 'empty')
+    ok, reason = e.rs.identify(string.rep('x', 257))
+    eq(ok, false); eq(reason, 'too_long')
+    eq(e.rs.isIdentified(), false)
+    cleanup()
+  end },
+
+  { 'identify: a whole number is hashed as its digits', function()
+    local e = fakeEngine()
+    local salt = string.rep('cd', 32)
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600, identify = { salt = salt } })
+    eq(e.rs.identify(12345), true)
+    eq(requestsTo(e, '/api/v1/identify')[1].body, '{"accountHash":"' .. Hmac.hex(salt, '12345') .. '"}')
+    cleanup()
+  end },
+
+  { 'resetIdentity: deletes the saved hash and switches to a fresh device id; nothing is sent', function()
+    local e = fakeEngine()
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600, identify = { salt = string.rep('ab', 32) } })
+    e.rs.identify('u1')
+    local device = e.rs.getDeviceId()
+    local before = #requestsTo(e, '/api/v1/identify')
+    e.rs.resetIdentity()
+    eq(e.rs.isIdentified(), false)
+    eq(e.file('ravensight_identity'), nil)
+    assert(e.rs.getDeviceId() ~= device, 'a fresh device id')
+    eq(e.file('ravensight_device_id'), e.rs.getDeviceId(), 'saved')
+    eq(#requestsTo(e, '/api/v1/identify'), before, 'no request')
+    local fresh = e.rs.getDeviceId()
+    e.rs.resetIdentity()
+    eq(e.rs.getDeviceId(), fresh, 'again with nothing set: the device is kept')
+    cleanup()
+  end },
+
+  { 'identify: before init not_started; without a key or with enabled = false held in memory only', function()
+    local e = fakeEngine()
+    local ok, reason = e.rs.identify('u1')
+    eq(ok, false); eq(reason, 'not_started')
+    cleanup()
+    for _, options in ipairs({ { optional = true }, { ingestKey = 'gt_live_k', enabled = false } }) do
+      local f = fakeEngine()
+      f.rs.init(options)
+      eq(f.rs.identify('u1'), true)
+      eq(f.rs.isIdentified(), true)
+      f.rs.resetIdentity()
+      eq(f.rs.isIdentified(), false)
+      eq(#f.requests, 0, 'no request')
+      eq(f.file('ravensight_identity'), nil, 'no file')
+      eq(f.file('ravensight_device_id'), nil, 'no device id')
+      cleanup()
+    end
+  end },
+
+  { 'HTML5: identify is saved through the engine\'s browser storage', function()
+    local e = fakeEngine({ system = 'HTML5' })
+    local salt = string.rep('ef', 32)
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600, identify = { salt = salt } })
+    eq(e.rs.identify('u1'), true)
+    local found
+    for path, t in pairs(e.web) do
+      if path:find('ravensight_identity', 1, true) and type(t.text) == 'string' then found = json.decode(t.text) end
+    end
+    assert(found, 'saved with sys.save')
+    eq(found.accountHash, Hmac.hex(salt, 'u1'))
+    eq(#requestsTo(e, '/api/v1/identify'), 1)
+    cleanup()
+  end },
+
+  -- ------------------------------------------------- 0.2.0: campaign links
+
+  { 'setCampaignLink before init goes lowercased with the first session; after init with the next one', function()
+    local e = fakeEngine()
+    eq(e.rs.setCampaignLink(LINK:upper()), true, 'held before init')
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    local first = e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600 })
+    eq(json.decode(first.body).campaignLink, LINK, 'sent lowercased with the first session')
+    local ok, reason = e.rs.setCampaignLink('nope')
+    eq(ok, false); eq(reason, 'invalid_link')
+    eq(e.rs.setCampaignLink(LINK2), true, 'accepted after init')
+    e.rs.resetDeviceId()
+    e.rs.track('x', {})
+    local sessions = requestsTo(e, '/api/v1/session')
+    eq(#sessions, 1)
+    eq(json.decode(sessions[1].body).campaignLink, LINK2, 'with the next session')
+    e.rs.update()
+    for _, name in ipairs({ 'ravensight_device_id', 'ravensight_queue-' .. Core.fnv1a64('gt_live_k') .. '.json' }) do
+      local text = e.file(name) or ''
+      assert(not text:find(LINK, 1, true) and not text:find(LINK2, 1, true), 'never saved: ' .. name)
+    end
+    cleanup()
+  end },
+
+  { 'setCampaignLink with no key or enabled = false is validated, held in memory and never sent', function()
+    for _, options in ipairs({ { optional = true }, { ingestKey = 'gt_live_k', enabled = false } }) do
+      local e = fakeEngine()
+      e.rs.init(options)
+      eq(e.rs.setCampaignLink(LINK), true)
+      local ok, reason = e.rs.setCampaignLink(nil)
+      eq(ok, false); eq(reason, 'invalid_link')
+      e.rs.update()
+      eq(#e.requests, 0, 'no request')
+      cleanup()
+    end
+  end },
+
+  { 'HTML5: rs_link is read from the page address once, at init, and sent with the first session', function()
+    local calls = {}
+    local html5 = { run = function(code)
+      calls[#calls + 1] = code
+      if code:find('rs_link', 1, true) then return LINK:upper() end
+      return ''
+    end }
+    local e = fakeEngine({ system = 'HTML5', html5 = html5 })
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    local reads = 0
+    for _, code in ipairs(calls) do
+      if code:find('rs_link', 1, true) then
+        reads = reads + 1
+        assert(code:find('location.search', 1, true), 'reads the page address: ' .. code)
+      end
+    end
+    eq(reads, 1, 'read once')
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    local session = e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600 })
+    eq(json.decode(session.body).campaignLink, LINK)
+    e.rs.update()
+    eq(reads, 1, 'never again')
+    cleanup()
+  end },
+
+  { 'HTML5: a page value that is not a link id is ignored, a failing read is harmless, and a link the game set wins', function()
+    for _, run in ipairs({
+      function() return 'not-a-link' end,
+      function() return LINK .. ' ' end,
+      function() return nil end,
+      function() error('no page') end,
+    }) do
+      local e = fakeEngine({ system = 'HTML5', html5 = { run = run } })
+      e.rs.init({ ingestKey = 'gt_live_k' })
+      e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+      local session = e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600 })
+      eq(json.decode(session.body).campaignLink, nil)
+      cleanup()
+    end
+    local e = fakeEngine({ system = 'HTML5', html5 = { run = function() return LINK end } })
+    eq(e.rs.setCampaignLink(LINK2), true)
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    local session = e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600 })
+    eq(json.decode(session.body).campaignLink, LINK2, 'the game\'s own call wins')
+    cleanup()
+  end },
+
+  { 'the page address is read only in an HTML5 build', function()
+    local calls = 0
+    local e = fakeEngine({ system = 'Darwin', html5 = { run = function() calls = calls + 1 return LINK end } })
+    e.rs.init({ ingestKey = 'gt_live_k' })
+    e.answer('/api/v1/settings', 200, { trackingEnabled = true })
+    local session = e.answer('/api/v1/session', 201, { token = 'tok', expiresIn = 3600 })
+    eq(json.decode(session.body).campaignLink, nil)
+    eq(calls, 0)
     cleanup()
   end },
 }

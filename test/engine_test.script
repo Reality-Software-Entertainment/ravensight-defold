@@ -14,7 +14,7 @@ require("ravensight.gzip")
 
 local function runSpecs()
 	local root = sys.get_config_string("ravensight_test.root", ".")
-	local files = { "json_spec", "scrub_spec", "config_spec", "typed_spec", "core_spec", "wave_spec", "contract_spec", "adapter_spec" }
+	local files = { "json_spec", "scrub_spec", "config_spec", "typed_spec", "core_spec", "wave_spec", "contract_spec", "adapter_spec", "identify_spec", "campaign_link_spec" }
 	local passed, failed = 0, 0
 	local cwd = root .. "/"
 	for _, name in ipairs(files) do
