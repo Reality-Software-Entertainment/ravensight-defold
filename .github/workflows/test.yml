@@ -73,7 +73,7 @@ jobs:
         with:
           node-version: '24'
       - name: Engine libraries and a virtual display
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libopenal1 libgl1 libglx-mesa0 libegl1 libgles2 libgles1 libvulkan1 mesa-vulkan-drivers libxi6 libxext6 libx11-6
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libopenal1 libgl1 libglu1-mesa libglx-mesa0 libegl1 libgles2 libgles1 libvulkan1 mesa-vulkan-drivers libxi6 libxext6 libx11-6
       - name: Download bob and the engine
         run: |
           mkdir -p tools
